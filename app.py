@@ -1,9 +1,3 @@
-"""
-KuantumCryptography_VDR_PQC_Protocol - Streamlit Arayüzü
-Kapsam: Araştırma, veri mahremiyeti ve siber mimari doğrulaması.
-Klinik tanı, değerlendirme veya tedavi kararı niteliği taşımaz.
-"""
-
 import copy
 import hashlib
 import hmac
@@ -16,6 +10,21 @@ import streamlit as st
 ROLES = {
     "authority": "Yetkili Taraf / Veri Sahibi (Anahtar ve Profil Kaynağı)",
     "compute_node": "Analiz / Hesaplama Düğümü (Sıfır Güven / PQC Kanal Alıcısı)",
+}
+
+FASTA_VDR_RECORDS = {
+    "VDR_12q13.11_BASELINE_FASTA": (
+        ">VDR_12q13.11_BASELINE_FASTA | gene=VDR | locus=12q13.11 | mode=synthetic_demo\n"
+        "ATGGAGGCAATGGCGGCCAGCACTTCCCTGGGCCTGCCTGAACCTCAGCACTGCCCCCGG\n"
+        "GAGCTGAAGGCCCTGCTGAAGGGCAACCTGAAGCGCCGCCTGGAGCGCCAGCTGGAGGAG\n"
+        "GCCCGCAAGGCCCGCCTGGAGGCCCTGGAGGCCCGCCTGGAGGCCCTGGAGGCCCGCCTG"
+    ),
+    "VDR_12q13.11_VARIANT_SIM_FASTA": (
+        ">VDR_12q13.11_VARIANT_SIM_FASTA | gene=VDR | locus=12q13.11 | mode=synthetic_demo\n"
+        "ATGGAGGCAATGGCGGCCAGCACTTCCCTGGGCCTGCCTGAACCTCAGCACTGCCCCCGG\n"
+        "GAGCTGAAGGCCCTGCTGAAGGGCAACCTGAAGCGCCGCCTGGAGCGCCAGCTGGAGGAG\n"
+        "GCCCGCAAGGCCCGCCTGGAGGCCCTGGAGGCCCGCCTGGAGGCCCTGGAGGCCCGCTTG"
+    ),
 }
 
 VDR_PROFILES = {
@@ -49,8 +58,6 @@ def _canonical_bytes(payload: Dict[str, Any]) -> bytes:
 
 
 class PQCChannel:
-    """ML-KEM ve ML-DSA mantığını simüle eden prototip kanal."""
-
     def __init__(self, kem_scheme: str = "ML-KEM-768", dsa_scheme: str = "ML-DSA-65") -> None:
         self.kem_scheme = kem_scheme
         self.dsa_scheme = dsa_scheme
@@ -130,17 +137,29 @@ st.caption(
 col1, col2 = st.columns([1, 1.3])
 
 with col1:
-    st.subheader("1. VDR Profili ve PQC Ayarları")
+    st.subheader("1. VDR Profili, FASTA ve PQC Ayarları")
     profile_id = st.selectbox("Profil Seçin", list(VDR_PROFILES.keys()))
+    fasta_id = st.selectbox("VDR FASTA Kaydı Seçin", list(FASTA_VDR_RECORDS.keys()))
+
     profile_data = copy.deepcopy(VDR_PROFILES[profile_id])
+    profile_data["fasta_record"] = FASTA_VDR_RECORDS[fasta_id]
+
+    st.code(profile_data["fasta_record"], language="text")
 
     kem_scheme = st.selectbox("Anahtar Kapsülleme (ML-KEM)", ["ML-KEM-768", "ML-KEM-1024"])
     dsa_scheme = st.selectbox("İmza / Bütünlük (ML-DSA)", ["ML-DSA-65", "ML-DSA-87"])
 
     tamper_enabled = st.checkbox("İletim sırasında veride değişiklik (tampering) simüle et", value=False)
-    tampered_val = profile_data["features"]["expression_norm"]
+    tamper_target = "expression_norm"
+    tampered_val = None
     if tamper_enabled:
-        tampered_val = st.slider("Bozulan expression_norm değeri", 0.0, 1.0, 0.99, 0.01)
+        tamper_target = st.radio(
+            "Bozulacak Alan",
+            ["expression_norm", "fasta_record (dizide bozulma)"],
+            horizontal=False,
+        )
+        if tamper_target == "expression_norm":
+            tampered_val = st.slider("Bozulan expression_norm değeri", 0.0, 1.0, 0.99, 0.01)
 
 with col2:
     st.subheader("2. Güvenli Kanal ve Doğrulama Ekranı")
@@ -154,7 +173,12 @@ with col2:
         envelope = channel.sign_envelope(sender=sender, receiver=receiver, profile_data=profile_data)
 
         if tamper_enabled:
-            envelope["payload"]["features"]["expression_norm"] = tampered_val
+            if tamper_target == "expression_norm" and tampered_val is not None:
+                envelope["payload"]["features"]["expression_norm"] = float(tampered_val)
+            else:
+                # FASTA dizisinin son bazını değiştirerek bütünlük bozulmasını simüle et
+                seq = envelope["payload"]["fasta_record"]
+                envelope["payload"]["fasta_record"] = seq[:-1] + ("A" if not seq.endswith("A") else "T")
 
         ok, msg, verified = channel.verify_and_open(receiver, envelope)
 
