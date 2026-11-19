@@ -53,7 +53,6 @@ VDR_PROFILES = {
     },
 }
 
-# Prototip amaçlı örnek yetkili erişim anahtarı (gerçek sistemde kurumsal KMS/HSM kullanılır)
 DEMO_AUTHORIZED_KEY = "KUANTUM-KULR-VDR-KEY-2026"
 
 
@@ -320,4 +319,16 @@ with col2:
                     "status": "REJECTED_TAMPERING",
                     "kem_scheme": kem_scheme,
                     "dsa_scheme": dsa_scheme,
-                    "
+                    "kem_token": envelope["kem_token"],
+                    "sim_index": None,
+                    "fasta_sha256_prefix": fasta_hash_short,
+                    "fasta_revealed": False,
+                },
+            )
+
+st.divider()
+st.subheader("3. Denetim Kayıtları (Audit Log — Kurumsal Güvenlik İzleme)")
+if st.session_state.audit_logs:
+    st.dataframe(st.session_state.audit_logs, use_container_width=True)
+else:
+    st.caption("Henüz işlem kaydı oluşmadı. Sağ sütundan 'Zarfı Gönder ve Doğrula' butonuna basabilirsin.")
