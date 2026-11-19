@@ -1,9 +1,10 @@
 import copy
+from datetime import datetime, timezone
 import hashlib
 import hmac
 import json
 import os
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, List, Tuple
 
 import streamlit as st
 
@@ -37,7 +38,7 @@ VDR_PROFILES = {
             "variant_rs1544410_score": 0.61,
             "expression_norm": 0.55,
         },
-        "scope_note": "Research and architectural simulation only; not for clinical use.",
+        "scope_note": "Research and architectural simulation only; not for clinical or MEDULA use.",
     },
     "VDR_HIGH_VARIATION_SIM": {
         "gene": "VDR",
@@ -48,9 +49,12 @@ VDR_PROFILES = {
             "variant_rs1544410_score": 0.74,
             "expression_norm": 0.29,
         },
-        "scope_note": "Research and architectural simulation only; not for clinical use.",
+        "scope_note": "Research and architectural simulation only; not for clinical or MEDULA use.",
     },
 }
+
+# Prototip amaçlı örnek yetkili erişim anahtarı (gerçek sistemde kurumsal KMS/HSM kullanılır)
+DEMO_AUTHORIZED_KEY = "KUANTUM-KULR-VDR-KEY-2026"
 
 
 def parse_fasta_sequence(fasta_text: str) -> str:
@@ -96,7 +100,7 @@ def compute_research_sim_summary(verified_payload: Dict[str, Any]) -> Dict[str, 
         "gc_ratio": round(gc_ratio, 4),
         "fasta_seq_length": seq_len,
         "fasta_sha256_prefix": fasta_sha256_short,
-        "disclaimer": "Architectural/research simulation index only; not a clinical risk or diagnostic score.",
+        "disclaimer": "Architectural/research simulation index only; not a clinical risk, diagnostic, or MEDULA score.",
     }
 
 
@@ -169,6 +173,9 @@ class PQCChannel:
         return True, "PQC oturum ve imza doğrulaması başarılı.", payload
 
 
+if "audit_logs" not in st.session_state:
+    st.session_state.audit_logs: List[Dict[str, Any]] = []
+
 st.set_page_config(
     page_title="Kuantum Cryptography — VDR PQC Prototipi",
     page_icon="🔐",
@@ -178,7 +185,7 @@ st.set_page_config(
 st.title("🔐 Kuantum Cryptography — VDR PQC Prototipi")
 st.caption(
     "Araştırma, veri mahremiyeti ve siber mimari doğrulaması amaçlı prototiptir; "
-    "klinik tanı, değerlendirme veya tedavi kararı yerine geçmez."
+    "klinik tanı, tedavi kararı veya MEDULA/fatura işlemleri yerine geçmez."
 )
 
 col1, col2 = st.columns([1, 1.3])
@@ -195,7 +202,6 @@ with col1:
     if fasta_source_mode == "Hazır VDR Kaydı Seç":
         fasta_id = st.selectbox("VDR FASTA Kaydı Seçin", list(FASTA_VDR_RECORDS.keys()))
         chosen_fasta = FASTA_VDR_RECORDS[fasta_id]
-        st.code(chosen_fasta, language="text")
     else:
         default_custom = (
             ">MY_CUSTOM_DNA_SEQ | gene=VDR_or_CUSTOM | mode=user_research_input\n"
@@ -204,12 +210,30 @@ with col1:
         chosen_fasta = st.text_area(
             "DNA FASTA Diziliminizi Yazın veya Yapıştırın",
             value=default_custom,
-            height=150,
+            height=140,
         )
+
+    st.markdown("##### Dizi Görünürlüğü ve Yetkili Anahtar")
+    reveal_fasta = st.checkbox("Yetkili Anahtar Onayı: FASTA gen dizilimini görüntüle", value=False)
+    entered_key = ""
+    key_valid = False
+    if reveal_fasta:
+        entered_key = st.text_input(
+            "Yetkili Erişim Anahtarı (Demo anahtar: KUANTUM-KULR-VDR-KEY-2026)",
+            type="password",
+        )
+        key_valid = hmac.compare_digest(entered_key.strip(), DEMO_AUTHORIZED_KEY)
+        if not key_valid:
+            st.warning("Geçerli yetkili anahtar girilmediği için FASTA dizilimi gizli tutuluyor.")
 
     profile_data = copy.deepcopy(VDR_PROFILES[profile_id])
     profile_data["fasta_source_mode"] = fasta_source_mode
     profile_data["fasta_record"] = chosen_fasta
+    profile_data["governance_meta"] = {
+        "data_classification": "synthetic_research_only",
+        "kvkk_health_compliance_note": "Requires institutional ethics, KVKK/health-data governance, and HSM/KMS before any real data.",
+        "medula_boundary": "Not a MEDULA billing/provision/clinical module; architectural & integrity prototype only.",
+    }
 
     kem_scheme = st.selectbox("Anahtar Kapsülleme (ML-KEM)", ["ML-KEM-768", "ML-KEM-1024"])
     dsa_scheme = st.selectbox("İmza / Bütünlük (ML-DSA)", ["ML-DSA-65", "ML-DSA-87"])
@@ -245,13 +269,16 @@ with col2:
                 envelope["payload"]["fasta_record"] = seq[:-1] + ("A" if not seq.endswith("A") else "T")
 
         ok, msg, verified = channel.verify_and_open(receiver, envelope)
+        fasta_hash_short = hashlib.sha256(
+            envelope["payload"].get("fasta_record", "").encode("utf-8")
+        ).hexdigest()[:16]
 
         st.write(f"**KEM Token:** `{envelope['kem_token']}`")
         if ok and verified is not None:
             st.success(f"✅ {msg}")
             sim_summary = compute_research_sim_summary(verified)
 
-            st.markdown("#### Araştırma Simülasyon Özeti (Klinik Amaçlı Değildir)")
+            st.markdown("#### Araştırma Simülasyon Özeti (Klinik / MEDULA Amaçlı Değildir)")
             m1, m2, m3, m4 = st.columns(4)
             m1.metric("Simülasyon Endeksi", sim_summary["research_sim_index"])
             m2.metric("FASTA Skoru", sim_summary["fasta_sim_score"])
@@ -259,7 +286,38 @@ with col2:
             m4.metric("GC Oranı", sim_summary["gc_ratio"])
             st.caption(f"FASTA SHA-256 Ön Eki: `{sim_summary['fasta_sha256_prefix']}` — {sim_summary['disclaimer']}")
 
-            st.json(verified)
+            if reveal_fasta and key_valid:
+                st.success("🔓 Yetkili anahtar doğrulandı; FASTA gen dizilimi gösteriliyor.")
+                st.code(verified["fasta_record"], language="text")
+            else:
+                st.info("🔒 Gen dizilimi varsayılan olarak gizli tutuluyor (yalnızca geçerli anahtar ile açılır).")
+
+            redacted_payload = copy.deepcopy(verified)
+            if not (reveal_fasta and key_valid):
+                redacted_payload["fasta_record"] = "[REDACTED — YETKİLİ ANAHTAR GEREKLİ]"
+            st.json(redacted_payload)
+
+            st.session_state.audit_logs.insert(
+                0,
+                {
+                    "timestamp_utc": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+                    "status": "ACCEPTED",
+                    "kem_scheme": kem_scheme,
+                    "dsa_scheme": dsa_scheme,
+                    "kem_token": envelope["kem_token"],
+                    "sim_index": sim_summary["research_sim_index"],
+                    "fasta_sha256_prefix": sim_summary["fasta_sha256_prefix"],
+                    "fasta_revealed": bool(reveal_fasta and key_valid),
+                },
+            )
         else:
             st.error(f"🛑 {msg}")
             st.info("Sıfır güven (Zero-Trust) kuralı gereği bozulmuş paket reddedildi.")
+            st.session_state.audit_logs.insert(
+                0,
+                {
+                    "timestamp_utc": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+                    "status": "REJECTED_TAMPERING",
+                    "kem_scheme": kem_scheme,
+                    "dsa_scheme": dsa_scheme,
+                    "
