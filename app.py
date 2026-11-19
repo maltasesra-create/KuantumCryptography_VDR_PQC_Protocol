@@ -53,26 +53,48 @@ VDR_PROFILES = {
 }
 
 
+def parse_fasta_sequence(fasta_text: str) -> str:
+    lines = [
+        line.strip().upper()
+        for line in (fasta_text or "").splitlines()
+        if line.strip() and not line.strip().startswith(">")
+    ]
+    raw_seq = "".join(lines)
+    return "".join(ch for ch in raw_seq if ch in {"A", "T", "G", "C"})
+
+
 def compute_research_sim_summary(verified_payload: Dict[str, Any]) -> Dict[str, Any]:
-    """Doğrulanmış sentetik VDR profilinden araştırma simülasyon özeti üretir (klinik amaçlı değildir)."""
+    """Doğrulanmış sentetik VDR profili ve FASTA dizisinden araştırma simülasyon özeti üretir."""
     feats = verified_payload.get("features", {})
     s1 = float(feats.get("variant_rs2228570_score", 0.0))
     s2 = float(feats.get("variant_rs1544410_score", 0.0))
     expr = float(feats.get("expression_norm", 0.0))
 
-    variant_mean = (s1 + s2) / 2.0
-    sim_index = round(max(0.0, min(1.0, 0.6 * variant_mean + 0.4 * (1.0 - expr))), 4)
-
     fasta_text = verified_payload.get("fasta_record", "")
-    seq_only = "".join(
-        line.strip() for line in fasta_text.splitlines() if line.strip() and not line.startswith(">")
+    clean_seq = parse_fasta_sequence(fasta_text)
+    seq_len = len(clean_seq)
+
+    if seq_len > 0:
+        gc_count = clean_seq.count("G") + clean_seq.count("C")
+        gc_ratio = gc_count / seq_len
+        at_ratio = (clean_seq.count("A") + clean_seq.count("T")) / seq_len
+        fasta_sim_score = round(min(1.0, max(0.0, 0.7 * gc_ratio + 0.3 * abs(gc_ratio - at_ratio))), 4)
+    else:
+        gc_ratio = 0.0
+        fasta_sim_score = 0.0
+
+    variant_mean = (s1 + s2) / 2.0
+    sim_index = round(
+        max(0.0, min(1.0, 0.45 * variant_mean + 0.25 * (1.0 - expr) + 0.30 * fasta_sim_score)),
+        4,
     )
     fasta_sha256_short = hashlib.sha256(fasta_text.encode("utf-8")).hexdigest()[:16]
 
     return {
         "research_sim_index": sim_index,
-        "variant_mean_sim": round(variant_mean, 4),
-        "fasta_seq_length": len(seq_only),
+        "fasta_sim_score": fasta_sim_score,
+        "gc_ratio": round(gc_ratio, 4),
+        "fasta_seq_length": seq_len,
         "fasta_sha256_prefix": fasta_sha256_short,
         "disclaimer": "Architectural/research simulation index only; not a clinical risk or diagnostic score.",
     }
@@ -164,12 +186,30 @@ col1, col2 = st.columns([1, 1.3])
 with col1:
     st.subheader("1. VDR Profili, FASTA ve PQC Ayarları")
     profile_id = st.selectbox("Profil Seçin", list(VDR_PROFILES.keys()))
-    fasta_id = st.selectbox("VDR FASTA Kaydı Seçin", list(FASTA_VDR_RECORDS.keys()))
+    fasta_source_mode = st.radio(
+        "FASTA Kaynağı",
+        ["Hazır VDR Kaydı Seç", "Kendi DNA FASTA Dizilimimi Yaz"],
+        horizontal=True,
+    )
+
+    if fasta_source_mode == "Hazır VDR Kaydı Seç":
+        fasta_id = st.selectbox("VDR FASTA Kaydı Seçin", list(FASTA_VDR_RECORDS.keys()))
+        chosen_fasta = FASTA_VDR_RECORDS[fasta_id]
+        st.code(chosen_fasta, language="text")
+    else:
+        default_custom = (
+            ">MY_CUSTOM_DNA_SEQ | gene=VDR_or_CUSTOM | mode=user_research_input\n"
+            "ATGGCTAGCTAGCTAGCATGCATGCTAGCTAGCTAGCATGCATGCTAGCTAGCTAGCATGCA"
+        )
+        chosen_fasta = st.text_area(
+            "DNA FASTA Diziliminizi Yazın veya Yapıştırın",
+            value=default_custom,
+            height=150,
+        )
 
     profile_data = copy.deepcopy(VDR_PROFILES[profile_id])
-    profile_data["fasta_record"] = FASTA_VDR_RECORDS[fasta_id]
-
-    st.code(profile_data["fasta_record"], language="text")
+    profile_data["fasta_source_mode"] = fasta_source_mode
+    profile_data["fasta_record"] = chosen_fasta
 
     kem_scheme = st.selectbox("Anahtar Kapsülleme (ML-KEM)", ["ML-KEM-768", "ML-KEM-1024"])
     dsa_scheme = st.selectbox("İmza / Bütünlük (ML-DSA)", ["ML-DSA-65", "ML-DSA-87"])
@@ -212,11 +252,12 @@ with col2:
             sim_summary = compute_research_sim_summary(verified)
 
             st.markdown("#### Araştırma Simülasyon Özeti (Klinik Amaçlı Değildir)")
-            m1, m2, m3 = st.columns(3)
-            m1.metric("Araştırma Simülasyon Endeksi", sim_summary["research_sim_index"])
-            m2.metric("FASTA Dizi Uzunluğu", f"{sim_summary['fasta_seq_length']} nt")
-            m3.metric("FASTA SHA-256 Ön Eki", sim_summary["fasta_sha256_prefix"])
-            st.caption(sim_summary["disclaimer"])
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Simülasyon Endeksi", sim_summary["research_sim_index"])
+            m2.metric("FASTA Skoru", sim_summary["fasta_sim_score"])
+            m3.metric("Dizi Uzunluğu", f"{sim_summary['fasta_seq_length']} nt")
+            m4.metric("GC Oranı", sim_summary["gc_ratio"])
+            st.caption(f"FASTA SHA-256 Ön Eki: `{sim_summary['fasta_sha256_prefix']}` — {sim_summary['disclaimer']}")
 
             st.json(verified)
         else:
