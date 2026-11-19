@@ -53,6 +53,31 @@ VDR_PROFILES = {
 }
 
 
+def compute_research_sim_summary(verified_payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Doğrulanmış sentetik VDR profilinden araştırma simülasyon özeti üretir (klinik amaçlı değildir)."""
+    feats = verified_payload.get("features", {})
+    s1 = float(feats.get("variant_rs2228570_score", 0.0))
+    s2 = float(feats.get("variant_rs1544410_score", 0.0))
+    expr = float(feats.get("expression_norm", 0.0))
+
+    variant_mean = (s1 + s2) / 2.0
+    sim_index = round(max(0.0, min(1.0, 0.6 * variant_mean + 0.4 * (1.0 - expr))), 4)
+
+    fasta_text = verified_payload.get("fasta_record", "")
+    seq_only = "".join(
+        line.strip() for line in fasta_text.splitlines() if line.strip() and not line.startswith(">")
+    )
+    fasta_sha256_short = hashlib.sha256(fasta_text.encode("utf-8")).hexdigest()[:16]
+
+    return {
+        "research_sim_index": sim_index,
+        "variant_mean_sim": round(variant_mean, 4),
+        "fasta_seq_length": len(seq_only),
+        "fasta_sha256_prefix": fasta_sha256_short,
+        "disclaimer": "Architectural/research simulation index only; not a clinical risk or diagnostic score.",
+    }
+
+
 def _canonical_bytes(payload: Dict[str, Any]) -> bytes:
     return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
@@ -176,15 +201,23 @@ with col2:
             if tamper_target == "expression_norm" and tampered_val is not None:
                 envelope["payload"]["features"]["expression_norm"] = float(tampered_val)
             else:
-                # FASTA dizisinin son bazını değiştirerek bütünlük bozulmasını simüle et
                 seq = envelope["payload"]["fasta_record"]
                 envelope["payload"]["fasta_record"] = seq[:-1] + ("A" if not seq.endswith("A") else "T")
 
         ok, msg, verified = channel.verify_and_open(receiver, envelope)
 
         st.write(f"**KEM Token:** `{envelope['kem_token']}`")
-        if ok:
+        if ok and verified is not None:
             st.success(f"✅ {msg}")
+            sim_summary = compute_research_sim_summary(verified)
+
+            st.markdown("#### Araştırma Simülasyon Özeti (Klinik Amaçlı Değildir)")
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Araştırma Simülasyon Endeksi", sim_summary["research_sim_index"])
+            m2.metric("FASTA Dizi Uzunluğu", f"{sim_summary['fasta_seq_length']} nt")
+            m3.metric("FASTA SHA-256 Ön Eki", sim_summary["fasta_sha256_prefix"])
+            st.caption(sim_summary["disclaimer"])
+
             st.json(verified)
         else:
             st.error(f"🛑 {msg}")
